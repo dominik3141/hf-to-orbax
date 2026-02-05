@@ -26,7 +26,7 @@ os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
 import numpy as np
 import typer
-import ml_dtypes  # register bfloat16 dtype for numpy
+import ml_dtypes  # register bfloat16 dtype for numpy  # noqa: F401
 from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
 from safetensors import safe_open
 from tqdm import tqdm
@@ -52,7 +52,9 @@ def normalize_output_path(path: str, local: bool) -> str:
             raise typer.BadParameter("--local requires a filesystem path")
         return os.path.abspath(path)
     if not path.startswith("gs://") or len(path) <= 5:
-        raise typer.BadParameter("--output must be a valid gs:// path unless --local is set")
+        raise typer.BadParameter(
+            "--output must be a valid gs:// path unless --local is set"
+        )
     return path.rstrip("/")
 
 
@@ -200,7 +202,9 @@ def parse_layer_key(key: str) -> Optional[Tuple[int, str]]:
     return None
 
 
-def group_layer_keys(keys: Iterable[str]) -> Tuple[Dict[str, Dict[int, str]], List[str]]:
+def group_layer_keys(
+    keys: Iterable[str],
+) -> Tuple[Dict[str, Dict[int, str]], List[str]]:
     """Group layer parameters by suffix and separate non-layer parameters.
 
     This pass identifies all stackable keys, buckets them by suffix, and filters
@@ -223,7 +227,9 @@ def group_layer_keys(keys: Iterable[str]) -> Tuple[Dict[str, Dict[int, str]], Li
         suffix: group for suffix, group in suffix_groups.items() if len(group) >= 2
     }
 
-    stackable_keys = {key for group in stackable_suffixes.values() for key in group.values()}
+    stackable_keys = {
+        key for group in stackable_suffixes.values() for key in group.values()
+    }
     non_layer_keys = [key for key in keys if key not in stackable_keys]
 
     return stackable_suffixes, non_layer_keys
