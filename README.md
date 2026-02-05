@@ -21,7 +21,7 @@ uv sync
 ```bash
 uv run hf-safetensors-to-orbax \
   --hf-repo google/gemma-3-27b \
-  --gcs-bucket gs://my-bucket/gemma-3-27b-orbax
+  --output gs://my-bucket/gemma-3-27b-orbax
 ```
 
 Local output (skips GCS):
@@ -29,7 +29,7 @@ Local output (skips GCS):
 ```bash
 uv run hf-safetensors-to-orbax \
   --hf-repo google/gemma-3-27b \
-  --gcs-bucket ./orbax-out \
+  --output ./orbax-out \
   --local
 ```
 
@@ -39,7 +39,7 @@ Optional token (for gated models):
 uv run hf-safetensors-to-orbax \
   --hf-repo google/gemma-3-27b \
   --hf-token $HF_TOKEN \
-  --gcs-bucket gs://my-bucket/gemma-3-27b-orbax
+  --output gs://my-bucket/gemma-3-27b-orbax
 ```
 
 ## What it does

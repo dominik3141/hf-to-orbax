@@ -51,7 +51,7 @@ def normalize_output_path(path: str, local: bool) -> str:
             raise typer.BadParameter("--local requires a filesystem path")
         return os.path.abspath(path)
     if not path.startswith("gs://") or len(path) <= 5:
-        raise typer.BadParameter("--gcs-bucket must be a valid gs:// path")
+        raise typer.BadParameter("--output must be a valid gs:// path unless --local is set")
     return path.rstrip("/")
 
 
@@ -296,7 +296,7 @@ def save_array_to_temp(temp_dir: str, name: str, array: np.ndarray) -> np.ndarra
 def convert(
     hf_repo: str,
     hf_token: Optional[str],
-    gcs_bucket: str,
+    output_path: str,
     stacking_config: str,
     byte_progress: bool,
     local: bool,
@@ -311,7 +311,7 @@ def convert(
     if stacking_config != "auto":
         raise typer.BadParameter("--stacking-config only supports 'auto'")
 
-    gcs_bucket = normalize_output_path(gcs_bucket, local)
+    output_path = normalize_output_path(output_path, local)
     configure_hf_transfer(byte_progress)
     snapshot_dir = download_snapshot(hf_repo, hf_token, byte_progress)
     key_to_file = build_key_to_file(snapshot_dir)
@@ -379,9 +379,9 @@ def convert(
             output_tree[global_name] = save_array_to_temp(temp_dir, global_name, arr)
             del arr
 
-        logging.info("Saving Orbax checkpoint to %s", gcs_bucket)
+        logging.info("Saving Orbax checkpoint to %s", output_path)
         checkpointer = ocp.StandardCheckpointer()
-        checkpointer.save(gcs_bucket, output_tree)
+        checkpointer.save(output_path, output_tree)
         logging.info("Save complete")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -394,7 +394,11 @@ app = typer.Typer(add_completion=False)
 def main(
     hf_repo: str = typer.Option(..., help="Hugging Face repo ID"),
     hf_token: Optional[str] = typer.Option(None, help="Hugging Face auth token"),
-    gcs_bucket: str = typer.Option(..., help="Target path (gs://... unless --local)"),
+    output: str = typer.Option(
+        ...,
+        "--output",
+        help="Output path (gs://... unless --local)",
+    ),
     stacking_config: str = typer.Option("auto", help="Stacking strategy (only 'auto')"),
     byte_progress: bool = typer.Option(
         True,
@@ -417,7 +421,7 @@ def main(
     convert(
         hf_repo=hf_repo,
         hf_token=hf_token,
-        gcs_bucket=gcs_bucket,
+        output_path=output,
         stacking_config=stacking_config,
         byte_progress=byte_progress,
         local=local,
