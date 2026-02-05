@@ -63,6 +63,16 @@ def configure_logging() -> None:
     )
 
 
+def configure_hf_transfer(byte_progress: bool) -> None:
+    """Enable or disable byte-level download progress via hf_transfer.
+
+    Hugging Face's default snapshot progress bar is per-file, which makes large
+    single-file models look stuck at 0/1 for a long time. Enabling hf_transfer
+    switches to a byte-level stream so progress reflects actual download volume.
+    """
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1" if byte_progress else "0"
+
+
 def download_snapshot(repo_id: str, token: Optional[str]) -> str:
     """Download the safetensors snapshot from Hugging Face.
 
@@ -96,25 +106,36 @@ def find_index_json(snapshot_dir: str) -> Optional[str]:
 def build_key_to_file(snapshot_dir: str) -> Dict[str, str]:
     """Build a mapping from tensor key to safetensors file path.
 
-    Require the official shard index to avoid redundant scans and to make the
-    conversion deterministic. Duplicate keys are treated as fatal to prevent
-    silent corruption.
+    Prefer the official shard index when available to avoid redundant scans.
+    If no index exists (common for single-file models), scan the safetensors
+    files directly. Duplicate keys are treated as fatal to prevent corruption.
     """
     index_path = find_index_json(snapshot_dir)
-    if not index_path:
-        raise ValueError("Missing safetensors index JSON file")
+    if index_path:
+        with open(index_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        weight_map = data.get("weight_map")
+        if not weight_map:
+            raise ValueError(f"Index JSON missing weight_map: {index_path}")
+        mapping: Dict[str, str] = {}
+        for key, rel_path in weight_map.items():
+            abs_path = os.path.join(snapshot_dir, rel_path)
+            if key in mapping:
+                raise ValueError(f"Duplicate key in index: {key}")
+            mapping[key] = abs_path
+        return mapping
 
-    with open(index_path, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    weight_map = data.get("weight_map")
-    if not weight_map:
-        raise ValueError(f"Index JSON missing weight_map: {index_path}")
-    mapping: Dict[str, str] = {}
-    for key, rel_path in weight_map.items():
-        abs_path = os.path.join(snapshot_dir, rel_path)
-        if key in mapping:
-            raise ValueError(f"Duplicate key in index: {key}")
-        mapping[key] = abs_path
+    safetensor_files = list(Path(snapshot_dir).rglob("*.safetensors"))
+    if not safetensor_files:
+        raise ValueError("No .safetensors files found in snapshot")
+
+    mapping = {}
+    for file_path in safetensor_files:
+        with safe_open(str(file_path), framework="numpy") as handle:
+            for key in handle.keys():
+                if key in mapping:
+                    raise ValueError(f"Duplicate key across files: {key}")
+                mapping[key] = str(file_path)
     return mapping
 
 
@@ -233,6 +254,7 @@ def convert(
     hf_token: Optional[str],
     gcs_bucket: str,
     stacking_config: str,
+    byte_progress: bool,
 ) -> None:
     """Run the full conversion pipeline from HF snapshot to Orbax checkpoint.
 
@@ -245,6 +267,7 @@ def convert(
         raise typer.BadParameter("--stacking-config only supports 'auto'")
 
     gcs_bucket = ensure_gcs_path(gcs_bucket)
+    configure_hf_transfer(byte_progress)
     snapshot_dir = download_snapshot(hf_repo, hf_token)
     key_to_file = build_key_to_file(snapshot_dir)
 
@@ -328,6 +351,11 @@ def main(
     hf_token: Optional[str] = typer.Option(None, help="Hugging Face auth token"),
     gcs_bucket: str = typer.Option(..., help="Target GCS path (gs://...)"),
     stacking_config: str = typer.Option("auto", help="Stacking strategy (only 'auto')"),
+    byte_progress: bool = typer.Option(
+        True,
+        "--byte-progress/--no-byte-progress",
+        help="Use byte-level progress via hf_transfer",
+    ),
 ) -> None:
     """CLI entrypoint that wires arguments to the conversion routine.
 
@@ -336,7 +364,13 @@ def main(
     """
 
     configure_logging()
-    convert(hf_repo=hf_repo, hf_token=hf_token, gcs_bucket=gcs_bucket, stacking_config=stacking_config)
+    convert(
+        hf_repo=hf_repo,
+        hf_token=hf_token,
+        gcs_bucket=gcs_bucket,
+        stacking_config=stacking_config,
+        byte_progress=byte_progress,
+    )
 
 
 if __name__ == "__main__":

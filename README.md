@@ -50,7 +50,7 @@ uv run hf-safetensors-to-orbax \
 ## Notes
 
 - The converter fails fast on missing layer indices or shape mismatches.
-- The snapshot must include a single `*.safetensors.index.json` file.
 - Expect one stacked tensor at a time in RAM; a single stack for large models
   can be ~2GB.
 - GCS auth must be configured before running (ADC or service account).
+- Byte-level download progress uses `hf_transfer`, which is installed by default.
