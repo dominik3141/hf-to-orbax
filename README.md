@@ -1,14 +1,15 @@
 # HF Safetensors → Orbax (TensorStore) with Smart Stacking
 
 Convert Hugging Face `.safetensors` checkpoints into a JAX/Orbax TensorStore
-checkpoint with stacked layer parameters (e.g. `layers_stacked/self_attn/q_proj`).
+checkpoint with stacked layer parameters (the layer index is removed, otherwise
+the key name is preserved).
 The converter is CPU-only and processes one stack at a time to keep memory use
 manageable.
 
 ## Requirements
 
 - GCS write access (ADC or service account)
-- `gs://...` output path (local paths are rejected)
+- `gs://...` output path (unless `--local` is used)
 
 Install dependencies (uv):
 
@@ -51,10 +52,9 @@ uv run hf-safetensors-to-orbax \
 
 ### Output naming
 
-- Stacked: `layers_stacked/<suffix path>`
-  - Example: `model.layers.12.self_attn.q_proj` → `layers_stacked/self_attn/q_proj`
-- Global params: stripped prefixes + `.weight`, then dots → `/`
-  - Example: `model.embed_tokens.weight` → `embed_tokens`
+- Stacked: drop the numeric layer index, keep the rest of the key unchanged.
+  - Example: `model.layers.12.self_attn.q_proj.weight` → `model.layers.self_attn.q_proj.weight`
+- Global params: unchanged from Hugging Face (no prefix stripping or dot conversion).
 
 ## Notes
 
