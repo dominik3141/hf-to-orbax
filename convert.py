@@ -26,6 +26,7 @@ os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
 import numpy as np
 import typer
+import ml_dtypes  # register bfloat16 dtype for numpy
 from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
 from safetensors import safe_open
 from tqdm import tqdm
@@ -285,12 +286,21 @@ def save_array_to_temp(temp_dir: str, name: str, array: np.ndarray) -> np.ndarra
 
     Building the full output tree in RAM can be expensive for large models. By
     staging arrays to disk and reopening with mmap, we limit peak memory while
-    still handing Orbax a stable array-like object for checkpoint writing.
+    still handing Orbax a stable array-like object for checkpoint writing. We
+    store raw bytes instead of `.npy` so non-standard dtypes like bfloat16 are
+    preserved when memory-mapped.
     """
-    file_path = os.path.join(temp_dir, f"{name}.npy")
+    file_path = os.path.join(temp_dir, f"{name}.bin")
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    np.save(file_path, array)
-    return np.load(file_path, mmap_mode="r")
+    if not array.flags["C_CONTIGUOUS"]:
+        array = np.ascontiguousarray(array)
+    array.tofile(file_path)
+    return np.memmap(
+        file_path,
+        mode="r",
+        dtype=array.dtype,
+        shape=array.shape,
+    )
 
 
 def convert(
@@ -382,6 +392,8 @@ def convert(
         logging.info("Saving Orbax checkpoint to %s", output_path)
         checkpointer = ocp.StandardCheckpointer()
         checkpointer.save(output_path, output_tree)
+        checkpointer.wait_until_finished()
+        checkpointer.close()
         logging.info("Save complete")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
