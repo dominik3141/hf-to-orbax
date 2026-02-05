@@ -1,0 +1,23 @@
+[project]
+name = "hf-safetensors-to-orbax"
+version = "0.1.0"
+description = "Convert Hugging Face safetensors to Orbax TensorStore with smart stacking"
+requires-python = ">=3.9"
+dependencies = [
+  "jax",
+  "orbax-checkpoint",
+  "huggingface_hub",
+  "safetensors",
+  "typer",
+  "tqdm",
+]
+
+[project.scripts]
+hf-safetensors-to-orbax = "convert:app"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["convert"]
