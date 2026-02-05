@@ -186,45 +186,53 @@ def build_key_to_file(snapshot_dir: str) -> Dict[str, str]:
     return mapping
 
 
-def parse_layer_key(key: str) -> Optional[Tuple[int, str]]:
-    """Parse a parameter key into (layer_index, suffix) if it looks stackable.
+def parse_layer_key(key: str) -> Optional[Tuple[str, int, str]]:
+    """Parse a parameter key into (prefix, layer_index, suffix) if it looks stackable.
 
     The heuristic looks for an integer segment that is preceded by a known layer
     container name (layers, h, blocks, ...). The suffix is everything after the
-    index, which becomes the grouping key for stacking.
+    index, which becomes the grouping key for stacking. The prefix is everything
+    before the layer container; it disambiguates multi-tower models that reuse
+    the same suffixes across different component stacks.
     """
     parts = key.split(".")
     for idx in range(1, len(parts) - 1):
         if parts[idx].isdigit() and parts[idx - 1] in ALLOWED_LAYER_PREFIXES:
+            prefix = ".".join(parts[: idx - 1]).strip(".")
             suffix = ".".join(parts[idx + 1 :]).strip(".")
             if suffix:
-                return int(parts[idx]), suffix
+                return prefix, int(parts[idx]), suffix
     return None
 
 
 def group_layer_keys(
     keys: Iterable[str],
-) -> Tuple[Dict[str, Dict[int, str]], List[str]]:
-    """Group layer parameters by suffix and separate non-layer parameters.
+) -> Tuple[Dict[Tuple[str, str], Dict[int, str]], List[str], Dict[str, set[str]]]:
+    """Group layer parameters by (prefix, suffix) and separate non-layer parameters.
 
-    This pass identifies all stackable keys, buckets them by suffix, and filters
-    the remaining parameters into a non-layer list. Only suffix groups with two
-    or more distinct layer indices qualify for stacking to reduce false positives.
+    This pass identifies all stackable keys, buckets them by (prefix, suffix),
+    and filters the remaining parameters into a non-layer list. Only groups with
+    two or more distinct layer indices qualify for stacking to reduce false positives.
+    It also tracks which prefixes appear for a given suffix to drive naming.
     """
-    suffix_groups: Dict[str, Dict[int, str]] = {}
+    suffix_groups: Dict[Tuple[str, str], Dict[int, str]] = {}
+    suffix_prefixes: Dict[str, set[str]] = {}
 
     for key in keys:
         parsed = parse_layer_key(key)
         if not parsed:
             continue
-        layer_idx, suffix = parsed
-        group = suffix_groups.setdefault(suffix, {})
+        prefix, layer_idx, suffix = parsed
+        group = suffix_groups.setdefault((prefix, suffix), {})
         if layer_idx in group:
-            raise ValueError(f"Duplicate layer index {layer_idx} for suffix {suffix}")
+            raise ValueError(
+                f"Duplicate layer index {layer_idx} for prefix '{prefix}' and suffix '{suffix}'"
+            )
         group[layer_idx] = key
+        suffix_prefixes.setdefault(suffix, set()).add(prefix)
 
     stackable_suffixes = {
-        suffix: group for suffix, group in suffix_groups.items() if len(group) >= 2
+        key: group for key, group in suffix_groups.items() if len(group) >= 2
     }
 
     stackable_keys = {
@@ -232,7 +240,7 @@ def group_layer_keys(
     }
     non_layer_keys = [key for key in keys if key not in stackable_keys]
 
-    return stackable_suffixes, non_layer_keys
+    return stackable_suffixes, non_layer_keys, suffix_prefixes
 
 
 def load_tensor(file_path: str, key: str) -> np.ndarray:
@@ -258,14 +266,20 @@ def validate_contiguous(indices: List[int], suffix: str) -> None:
         )
 
 
-def make_stacked_name(suffix: str) -> str:
-    """Translate a suffix into the output stacked parameter name.
+def make_stacked_name(prefix: str, suffix: str, suffix_prefixes: Dict[str, set[str]]) -> str:
+    """Translate a (prefix, suffix) pair into the output stacked parameter name.
 
     The suffix path is preserved while converting dots to slashes, and it is
-    rooted under `layers_stacked/` to make stacked arrays explicit and distinct
-    from non-layer parameters in the output tree.
+    rooted under `layers_stacked/`. If the same suffix appears under multiple
+    prefixes, the prefix path is included to avoid collisions and make the
+    output explicit for multi-tower models.
     """
-    return "layers_stacked/" + suffix.replace(".", "/")
+    suffix_path = suffix.replace(".", "/")
+    if len(suffix_prefixes.get(suffix, set())) > 1:
+        prefix_path = prefix.replace(".", "/").strip("/")
+        if prefix_path:
+            return f"layers_stacked/{prefix_path}/{suffix_path}"
+    return f"layers_stacked/{suffix_path}"
 
 
 def clean_global_name(key: str) -> str:
@@ -333,7 +347,7 @@ def convert(
     key_to_file = build_key_to_file(snapshot_dir)
 
     keys = sorted(key_to_file.keys())
-    stackable, non_layer_keys = group_layer_keys(keys)
+    stackable, non_layer_keys, suffix_prefixes = group_layer_keys(keys)
 
     logging.info("Found %d stackable groups", len(stackable))
     logging.info("Found %d non-layer params", len(non_layer_keys))
@@ -345,8 +359,8 @@ def convert(
     logging.info("Using temp dir: %s", temp_dir)
 
     try:
-        for suffix in tqdm(sorted(stackable.keys()), desc="Stacking groups"):
-            group = stackable[suffix]
+        for prefix, suffix in tqdm(sorted(stackable.keys()), desc="Stacking groups"):
+            group = stackable[(prefix, suffix)]
             indices = sorted(group.keys())
             validate_contiguous(indices, suffix)
 
@@ -356,8 +370,9 @@ def convert(
             stacked[0] = first_arr
             base_shape = first_arr.shape
             logging.info(
-                "Stacking %s | layers %d-%d | shape %s | dtype %s",
+                "Stacking %s | prefix %s | layers %d-%d | shape %s | dtype %s",
                 suffix,
+                prefix or "<root>",
                 indices[0],
                 indices[-1],
                 base_shape,
@@ -374,7 +389,7 @@ def convert(
                     )
                 stacked[pos] = arr
 
-            stacked_name = make_stacked_name(suffix)
+            stacked_name = make_stacked_name(prefix, suffix, suffix_prefixes)
             if stacked_name in used_names:
                 raise ValueError(f"Output name collision: {stacked_name}")
             used_names.add(stacked_name)
