@@ -81,17 +81,15 @@ def download_snapshot(repo_id: str, token: Optional[str]) -> str:
 def find_index_json(snapshot_dir: str) -> Optional[str]:
     """Locate a safetensors index JSON, if present.
 
-    Models with sharded weights include a single index JSON listing the mapping
-    from tensor name to shard file. When multiple are present (rare), we pick
-    the first and warn to keep the conversion deterministic.
+    Sharded HF checkpoints publish a single index JSON that maps tensor names
+    to shard files. We treat multiple index files as an error because it is not
+    a standard layout and likely indicates a mixed or malformed snapshot.
     """
     matches = list(Path(snapshot_dir).rglob("*.safetensors.index.json"))
     if not matches:
         return None
     if len(matches) > 1:
-        logging.warning(
-            "Multiple index JSON files found; using %s", matches[0].name
-        )
+        raise ValueError("Multiple safetensors index JSON files found")
     return str(matches[0])
 
 
