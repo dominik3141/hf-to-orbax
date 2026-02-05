@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Convert Hugging Face safetensors to Orbax TensorStore with smart stacking"
 requires-python = ">=3.9"
 dependencies = [
+  "gcsfs",
   "hf-transfer",
   "jax",
   "orbax-checkpoint",
