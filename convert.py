@@ -96,36 +96,25 @@ def find_index_json(snapshot_dir: str) -> Optional[str]:
 def build_key_to_file(snapshot_dir: str) -> Dict[str, str]:
     """Build a mapping from tensor key to safetensors file path.
 
-    Prefer the official shard index when available to avoid redundant scans.
-    Otherwise, scan each safetensors file and build the map directly. Duplicate
-    keys are treated as fatal to prevent silent corruption.
+    Require the official shard index to avoid redundant scans and to make the
+    conversion deterministic. Duplicate keys are treated as fatal to prevent
+    silent corruption.
     """
     index_path = find_index_json(snapshot_dir)
-    if index_path:
-        with open(index_path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        weight_map = data.get("weight_map")
-        if not weight_map:
-            raise ValueError(f"Index JSON missing weight_map: {index_path}")
-        mapping: Dict[str, str] = {}
-        for key, rel_path in weight_map.items():
-            abs_path = os.path.join(snapshot_dir, rel_path)
-            if key in mapping:
-                raise ValueError(f"Duplicate key in index: {key}")
-            mapping[key] = abs_path
-        return mapping
+    if not index_path:
+        raise ValueError("Missing safetensors index JSON file")
 
-    safetensor_files = list(Path(snapshot_dir).rglob("*.safetensors"))
-    if not safetensor_files:
-        raise ValueError("No .safetensors files found in snapshot")
-
-    mapping = {}
-    for file_path in safetensor_files:
-        with safe_open(str(file_path), framework="numpy") as handle:
-            for key in handle.keys():
-                if key in mapping:
-                    raise ValueError(f"Duplicate key across files: {key}")
-                mapping[key] = str(file_path)
+    with open(index_path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    weight_map = data.get("weight_map")
+    if not weight_map:
+        raise ValueError(f"Index JSON missing weight_map: {index_path}")
+    mapping: Dict[str, str] = {}
+    for key, rel_path in weight_map.items():
+        abs_path = os.path.join(snapshot_dir, rel_path)
+        if key in mapping:
+            raise ValueError(f"Duplicate key in index: {key}")
+        mapping[key] = abs_path
     return mapping
 
 
