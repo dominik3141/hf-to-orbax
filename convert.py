@@ -11,6 +11,7 @@ names for downstream JAX/Orbax training loops.
 from __future__ import annotations
 
 import gc
+import fnmatch
 import json
 import logging
 import os
@@ -25,7 +26,7 @@ os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
 import numpy as np
 import typer
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
 from safetensors import safe_open
 from tqdm import tqdm
 
@@ -38,13 +39,17 @@ PREFIXES_TO_STRIP = ("model.", "transformer.", "module.")
 WEIGHT_SUFFIX = ".weight"
 
 
-def ensure_gcs_path(path: str) -> str:
-    """Validate and normalize the output location as a GCS path.
+def normalize_output_path(path: str, local: bool) -> str:
+    """Validate and normalize the output location.
 
-    The converter is intentionally GCS-only to avoid confusing local paths or
-    partial outputs. This helper enforces the scheme, trims trailing slashes,
-    and fails fast when the input is clearly not a usable GCS prefix.
+    By default the converter writes to GCS and enforces a `gs://` prefix. When
+    the local flag is set, the path is treated as a local filesystem destination
+    and `gs://` paths are rejected to avoid accidental uploads.
     """
+    if local:
+        if path.startswith("gs://"):
+            raise typer.BadParameter("--local requires a filesystem path")
+        return os.path.abspath(path)
     if not path.startswith("gs://") or len(path) <= 5:
         raise typer.BadParameter("--gcs-bucket must be a valid gs:// path")
     return path.rstrip("/")
@@ -73,19 +78,58 @@ def configure_hf_transfer(byte_progress: bool) -> None:
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1" if byte_progress else "0"
 
 
-def download_snapshot(repo_id: str, token: Optional[str]) -> str:
+def infer_snapshot_dir(file_path: str) -> str:
+    """Infer the snapshot directory from a cached Hugging Face file path.
+
+    Cached files live under `.../snapshots/<commit>/...`. This helper finds that
+    segment and returns the snapshot directory so subsequent code can operate on
+    a stable root without assuming a particular cache location.
+    """
+    parts = Path(file_path).parts
+    for idx, part in enumerate(parts):
+        if part == "snapshots" and idx + 1 < len(parts):
+            return str(Path(*parts[: idx + 2]))
+    raise ValueError(f"Unable to infer snapshot dir from path: {file_path}")
+
+
+def download_snapshot(repo_id: str, token: Optional[str], byte_progress: bool) -> str:
     """Download the safetensors snapshot from Hugging Face.
 
-    Uses the Hub snapshot API to materialize only safetensors and their optional
-    index JSON. This isolates the conversion to weight files and avoids pulling
-    large artifacts that are irrelevant to the conversion pipeline.
+    The fast path uses `snapshot_download`, which only exposes file-count
+    progress. When byte-level progress is enabled, this function lists matching
+    files and downloads each with `hf_hub_download` to get per-byte visibility.
     """
+    allow_patterns = ["*.safetensors", "*.safetensors.index.json"]
     logging.info("Downloading snapshot for %s", repo_id)
-    return snapshot_download(
-        repo_id=repo_id,
-        token=token,
-        allow_patterns=["*.safetensors", "*.safetensors.index.json"],
-    )
+
+    if not byte_progress:
+        return snapshot_download(
+            repo_id=repo_id,
+            token=token,
+            allow_patterns=allow_patterns,
+        )
+
+    repo_files = list_repo_files(repo_id=repo_id, token=token)
+    filtered = [
+        name
+        for name in repo_files
+        if any(fnmatch.fnmatch(name, pat) for pat in allow_patterns)
+    ]
+    if not filtered:
+        raise ValueError("No matching safetensors files found in repository")
+
+    snapshot_dir: Optional[str] = None
+    for name in tqdm(sorted(filtered), desc="Downloading files"):
+        path = hf_hub_download(repo_id=repo_id, filename=name, token=token)
+        inferred = infer_snapshot_dir(path)
+        if snapshot_dir is None:
+            snapshot_dir = inferred
+        elif snapshot_dir != inferred:
+            raise ValueError("Downloaded files belong to different snapshot dirs")
+
+    if snapshot_dir is None:
+        raise ValueError("Unable to determine snapshot directory")
+    return snapshot_dir
 
 
 def find_index_json(snapshot_dir: str) -> Optional[str]:
@@ -255,6 +299,7 @@ def convert(
     gcs_bucket: str,
     stacking_config: str,
     byte_progress: bool,
+    local: bool,
 ) -> None:
     """Run the full conversion pipeline from HF snapshot to Orbax checkpoint.
 
@@ -266,9 +311,9 @@ def convert(
     if stacking_config != "auto":
         raise typer.BadParameter("--stacking-config only supports 'auto'")
 
-    gcs_bucket = ensure_gcs_path(gcs_bucket)
+    gcs_bucket = normalize_output_path(gcs_bucket, local)
     configure_hf_transfer(byte_progress)
-    snapshot_dir = download_snapshot(hf_repo, hf_token)
+    snapshot_dir = download_snapshot(hf_repo, hf_token, byte_progress)
     key_to_file = build_key_to_file(snapshot_dir)
 
     keys = sorted(key_to_file.keys())
@@ -349,12 +394,17 @@ app = typer.Typer(add_completion=False)
 def main(
     hf_repo: str = typer.Option(..., help="Hugging Face repo ID"),
     hf_token: Optional[str] = typer.Option(None, help="Hugging Face auth token"),
-    gcs_bucket: str = typer.Option(..., help="Target GCS path (gs://...)"),
+    gcs_bucket: str = typer.Option(..., help="Target path (gs://... unless --local)"),
     stacking_config: str = typer.Option("auto", help="Stacking strategy (only 'auto')"),
     byte_progress: bool = typer.Option(
         True,
         "--byte-progress/--no-byte-progress",
         help="Use byte-level progress via hf_transfer",
+    ),
+    local: bool = typer.Option(
+        False,
+        "--local/--no-local",
+        help="Write to a local filesystem path instead of GCS",
     ),
 ) -> None:
     """CLI entrypoint that wires arguments to the conversion routine.
@@ -370,6 +420,7 @@ def main(
         gcs_bucket=gcs_bucket,
         stacking_config=stacking_config,
         byte_progress=byte_progress,
+        local=local,
     )
 
 

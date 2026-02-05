@@ -24,6 +24,15 @@ uv run hf-safetensors-to-orbax \
   --gcs-bucket gs://my-bucket/gemma-3-27b-orbax
 ```
 
+Local output (skips GCS):
+
+```bash
+uv run hf-safetensors-to-orbax \
+  --hf-repo google/gemma-3-27b \
+  --gcs-bucket ./orbax-out \
+  --local
+```
+
 Optional token (for gated models):
 
 ```bash
@@ -54,3 +63,4 @@ uv run hf-safetensors-to-orbax \
   can be ~2GB.
 - GCS auth must be configured before running (ADC or service account).
 - Byte-level download progress uses `hf_transfer`, which is installed by default.
+- Use `--local` to write to a filesystem path instead of GCS.
